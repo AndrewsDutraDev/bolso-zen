@@ -43,7 +43,7 @@ export function PurchaseList({
 
   return (
     <>
-      <section className="grid gap-4 lg:hidden">
+      <section className="grid max-h-[42rem] gap-4 overflow-y-auto pr-1 lg:hidden">
         {purchases.map((purchase) => (
           <MobilePurchaseCard
             key={purchase.id}
@@ -57,7 +57,7 @@ export function PurchaseList({
       </section>
 
       <section className="hidden overflow-hidden rounded-[32px] border border-white/60 bg-white/85 shadow-soft lg:block">
-        <div className="overflow-x-auto">
+        <div className="max-h-[42rem] overflow-auto">
           <table className="min-w-full border-collapse text-left">
             <thead className="bg-linen/80 text-xs uppercase tracking-[0.16em] text-moss/70">
               <tr>

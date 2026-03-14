@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import {
   ArrowDownToLine,
@@ -9,6 +9,14 @@ import {
   Plus,
   WalletCards,
 } from "lucide-react";
+import {
+  createPurchaseInApi,
+  deletePurchaseInApi,
+  fetchPurchasesFromApi,
+  importPurchasesToApi,
+  isApiConfigured,
+  updatePurchaseInApi,
+} from "./api";
 import { ForecastView } from "./components/ForecastView";
 import { FiltersBar } from "./components/FiltersBar";
 import { PurchaseList } from "./components/PurchaseList";
@@ -35,6 +43,9 @@ const emptyFilters: FiltersState = {
 
 const BILL_CLOSING_DAY = DEFAULT_INVOICE_CLOSING_DAY;
 const BILL_ENTRY_DAY = DEFAULT_INVOICE_ENTRY_DAY;
+const API_ENABLED = isApiConfigured();
+
+type DataSource = "mongodb" | "local";
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -44,9 +55,63 @@ export default function App() {
   const [editingPurchase, setEditingPurchase] = useState<PurchaseRecord | null>(null);
   const [feedback, setFeedback] = useState<string>("");
   const [forecastRange, setForecastRange] = useState(6);
+  const [isLoading, setIsLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<DataSource>(
+    API_ENABLED ? "mongodb" : "local",
+  );
 
   useEffect(() => {
-    setPurchases(loadPurchases());
+    let isActive = true;
+
+    const bootstrap = async () => {
+      setIsLoading(true);
+
+      try {
+        if (API_ENABLED) {
+          const apiPurchases = await fetchPurchasesFromApi();
+
+          if (!isActive) {
+            return;
+          }
+
+          setPurchases(apiPurchases);
+          setDataSource("mongodb");
+          savePurchases(apiPurchases);
+          return;
+        }
+
+        const localPurchases = loadPurchases();
+
+        if (!isActive) {
+          return;
+        }
+
+        setPurchases(localPurchases);
+        setDataSource("local");
+      } catch {
+        const localPurchases = loadPurchases();
+
+        if (!isActive) {
+          return;
+        }
+
+        setPurchases(localPurchases);
+        setDataSource("local");
+        setFeedback(
+          "API indisponível. Exibindo os dados do cache local no navegador.",
+        );
+      } finally {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void bootstrap();
+
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -58,7 +123,7 @@ export default function App() {
       return;
     }
 
-    const timer = window.setTimeout(() => setFeedback(""), 2800);
+    const timer = window.setTimeout(() => setFeedback(""), 3200);
     return () => window.clearTimeout(timer);
   }, [feedback]);
 
@@ -76,6 +141,7 @@ export default function App() {
       ),
     [filteredPurchases],
   );
+
   const forecastMonths = useMemo(
     () =>
       buildForecastMonths(
@@ -105,35 +171,56 @@ export default function App() {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (purchase: PurchaseRecord) => {
+  const handleDelete = async (purchase: PurchaseRecord) => {
     const confirmed = window.confirm(
-      `Excluir a compra "${purchase.descricao}"? Esta ação remove o registro local.`,
+      `Excluir a compra "${purchase.descricao}"? Esta ação remove o registro ${
+        dataSource === "mongodb" ? "do MongoDB" : "local"
+      }.`,
     );
 
     if (!confirmed) {
       return;
     }
 
-    setPurchases((current) => current.filter((item) => item.id !== purchase.id));
-    setFeedback("Compra removida.");
-  };
-
-  const handleSubmit = (record: PurchaseRecord) => {
-    setPurchases((current) => {
-      const existingIndex = current.findIndex((item) => item.id === record.id);
-
-      if (existingIndex >= 0) {
-        const next = [...current];
-        next[existingIndex] = record;
-        return next;
+    try {
+      if (dataSource === "mongodb") {
+        await deletePurchaseInApi(purchase.id);
       }
 
-      return [record, ...current];
-    });
+      setPurchases((current) => current.filter((item) => item.id !== purchase.id));
+      setFeedback("Compra removida.");
+    } catch {
+      window.alert("Não foi possível excluir a compra.");
+    }
+  };
 
-    setIsModalOpen(false);
-    setEditingPurchase(null);
-    setFeedback(editingPurchase ? "Compra atualizada." : "Compra adicionada.");
+  const handleSubmit = async (record: PurchaseRecord) => {
+    try {
+      const persistedRecord =
+        dataSource === "mongodb"
+          ? editingPurchase
+            ? await updatePurchaseInApi(record)
+            : await createPurchaseInApi(record)
+          : record;
+
+      setPurchases((current) => {
+        const existingIndex = current.findIndex((item) => item.id === persistedRecord.id);
+
+        if (existingIndex >= 0) {
+          const next = [...current];
+          next[existingIndex] = persistedRecord;
+          return next;
+        }
+
+        return [persistedRecord, ...current];
+      });
+
+      setIsModalOpen(false);
+      setEditingPurchase(null);
+      setFeedback(editingPurchase ? "Compra atualizada." : "Compra adicionada.");
+    } catch {
+      window.alert("Não foi possível salvar a compra.");
+    }
   };
 
   const handleImportClick = () => {
@@ -155,7 +242,10 @@ export default function App() {
         throw new Error("Formato inválido");
       }
 
-      setPurchases(parsed);
+      const nextPurchases =
+        dataSource === "mongodb" ? await importPurchasesToApi(parsed) : parsed;
+
+      setPurchases(nextPurchases);
       setFeedback("Dados importados com sucesso.");
     } catch {
       window.alert("Não foi possível importar o JSON. Verifique o arquivo.");
@@ -177,8 +267,8 @@ export default function App() {
                 Registre compras e acompanhe parcelamentos sem planilha.
               </h1>
               <p className="mt-4 max-w-2xl text-sm text-white/80 sm:text-base">
-                Painel local em pt-BR para cadastrar gastos, ver o que j&aacute; foi
-                pago e enxergar rapidamente o que ainda falta quitar.
+                Painel com persistência em {dataSource === "mongodb" ? "MongoDB" : "cache local"}
+                , previsão de faturas e controle de gastos em pt-BR.
               </p>
             </div>
 
@@ -211,6 +301,17 @@ export default function App() {
           onChange={handleImportFile}
         />
 
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="rounded-2xl border border-white/60 bg-white/80 px-4 py-3 text-sm font-medium text-moss shadow-sm">
+            Origem dos dados: {dataSource === "mongodb" ? "MongoDB" : "LocalStorage"}
+          </div>
+          {API_ENABLED ? (
+            <div className="rounded-2xl border border-white/60 bg-white/80 px-4 py-3 text-sm text-moss shadow-sm">
+              API configurada em <code>VITE_API_URL</code>
+            </div>
+          ) : null}
+        </div>
+
         {feedback ? (
           <div className="mt-4 rounded-2xl border border-mint bg-white/80 px-4 py-3 text-sm font-medium text-moss shadow-sm">
             {feedback}
@@ -228,13 +329,13 @@ export default function App() {
             <SummaryCard
               label="Total já pago"
               value={formatCurrency(summary.totalJaPago)}
-              hint="Valor acumulado das parcelas já liquidadas."
+              hint="O que já saiu das faturas fechadas."
               icon={<CircleDollarSign size={22} />}
             />
             <SummaryCard
               label="Total restante"
               value={formatCurrency(summary.totalRestante)}
-              hint="Quanto ainda falta pagar."
+              hint="O que ainda falta cair ou quitar."
               icon={<CreditCard size={22} />}
             />
             <SummaryCard
@@ -302,13 +403,19 @@ export default function App() {
             entryDay={BILL_ENTRY_DAY}
           />
 
-          <PurchaseList
-            purchases={filteredPurchases}
-            closingDay={BILL_CLOSING_DAY}
-            entryDay={BILL_ENTRY_DAY}
-            onEdit={handleEdit}
-            onDelete={handleDelete}
-          />
+          {isLoading ? (
+            <section className="rounded-[32px] border border-white/60 bg-white/80 px-6 py-8 text-sm text-moss shadow-soft">
+              Carregando dados...
+            </section>
+          ) : (
+            <PurchaseList
+              purchases={filteredPurchases}
+              closingDay={BILL_CLOSING_DAY}
+              entryDay={BILL_ENTRY_DAY}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+            />
+          )}
         </main>
       </div>
 

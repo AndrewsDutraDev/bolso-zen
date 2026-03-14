@@ -73,7 +73,7 @@ export function ForecastView({
             </div>
 
             {month.items.length > 0 ? (
-              <ul className="mt-4 space-y-3">
+              <ul className="mt-4 max-h-80 space-y-3 overflow-y-auto pr-1">
                 {month.items.map((item) => (
                   <li
                     key={`${month.monthKey}-${item.purchaseId}-${item.parcela}`}
